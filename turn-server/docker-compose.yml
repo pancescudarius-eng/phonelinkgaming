@@ -3,8 +3,16 @@ services:
     image: coturn/coturn:4.6.3
     restart: unless-stopped
     network_mode: host
-    command:
-      - -c
-      - /etc/coturn/turnserver.conf
+    env_file:
+      - .env
+    entrypoint:
+      - /bin/sh
+      - /opt/cosyra/entrypoint.sh
     volumes:
-      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./entrypoint.sh:/opt/cosyra/entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "turnutils_uclient -p 3478 -W \"$$TURN_PASSWORD\" -u \"$$TURN_USERNAME\" 127.0.0.1 >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
