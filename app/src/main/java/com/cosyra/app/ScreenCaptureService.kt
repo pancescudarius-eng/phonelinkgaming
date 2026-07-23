@@ -21,6 +21,7 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var stopping = false
 
     override fun onCreate() {
         super.onCreate()
@@ -54,7 +55,7 @@ class ScreenCaptureService : Service() {
         mediaProjection = projectionManager.getMediaProjection(resultCode, resultData).also { projection ->
             projection.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    stopCapture()
+                    stopCapture(stopProjection = false)
                     stopSelf()
                 }
             }, null)
@@ -89,13 +90,20 @@ class ScreenCaptureService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun stopCapture() {
+    private fun stopCapture(stopProjection: Boolean = true) {
+        if (stopping) return
+        stopping = true
+
         virtualDisplay?.release()
         virtualDisplay = null
         imageReader?.close()
         imageReader = null
-        mediaProjection?.stop()
+
+        val projection = mediaProjection
         mediaProjection = null
+        if (stopProjection) projection?.stop()
+
+        stopping = false
     }
 
     override fun onDestroy() {
