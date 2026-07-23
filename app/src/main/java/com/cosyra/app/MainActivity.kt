@@ -8,8 +8,10 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputFilter
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -21,12 +23,15 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.cosyra.app.control.RemoteControlAccessibilityService
+import com.cosyra.app.control.TouchCommand
 import com.cosyra.app.network.SessionCode
 import com.cosyra.app.network.SignalingClient
 import com.cosyra.app.network.SignalingMessage
 import com.cosyra.app.webrtc.IceCandidatePayload
 import com.cosyra.app.webrtc.SessionDescriptionPayload
 import com.cosyra.app.webrtc.WebRtcSession
+import org.webrtc.DataChannel
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
@@ -42,6 +47,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     private lateinit var hostStatus: TextView
     private lateinit var sessionCodeView: TextView
     private lateinit var clientStatus: TextView
+    private lateinit var controlStatus: TextView
     private lateinit var startHostButton: Button
     private lateinit var stopHostButton: Button
     private lateinit var remoteRenderer: SurfaceViewRenderer
@@ -51,6 +57,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     private var activeSessionCode: String? = null
     private var pendingRole: String? = null
     private var capturePermissionData: Intent? = null
+    private var gestureStartedAt = 0L
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -72,6 +79,17 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(createContent())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::controlStatus.isInitialized) {
+            controlStatus.text = if (RemoteControlAccessibilityService.isEnabled()) {
+                "CONTROL HOST ACTIV • gesturile pot fi executate"
+            } else {
+                "Control Host oprit • activează serviciul de accesibilitate"
+            }
+        }
     }
 
     private fun requestScreenCapture() {
@@ -151,9 +169,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
         when (message.type) {
             "host_ready" -> hostStatus.text =
                 "HOST ACTIV • flux video pregătit • cod ${message.sessionCode}"
-
             "client_joined" -> clientStatus.text = "Sesiune găsită • pregătesc WebRTC…"
-
             "peer_joined" -> {
                 val session = ensurePeerConnection()
                 if (pendingRole == "host") {
@@ -163,7 +179,6 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
                     clientStatus.text = "HOST CONECTAT • aștept fluxul video…"
                 }
             }
-
             "webrtc_offer" -> {
                 val payload = message.payload ?: return@runOnUiThread
                 val session = ensurePeerConnection()
@@ -171,17 +186,14 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
                     session.createAnswer()
                 }
             }
-
             "webrtc_answer" -> {
                 val payload = message.payload ?: return@runOnUiThread
                 ensurePeerConnection().setRemoteDescription(SessionDescriptionPayload.fromJson(payload))
             }
-
             "webrtc_ice" -> {
                 val payload = message.payload ?: return@runOnUiThread
                 ensurePeerConnection().addRemoteIceCandidate(IceCandidatePayload.fromJson(payload))
             }
-
             "peer_left" -> {
                 closePeerConnection()
                 remoteRenderer.visibility = View.GONE
@@ -191,7 +203,6 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
                     clientStatus.text = "Hostul s-a deconectat"
                 }
             }
-
             "error" -> showNetworkError(message.payload ?: "Eroare necunoscută")
         }
     }
@@ -215,7 +226,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
 
     override fun onRemoteVideoTrack(track: VideoTrack) = runOnUiThread {
         remoteRenderer.visibility = View.VISIBLE
-        clientStatus.text = "VIDEO ACTIV • imaginea Hostului este transmisă"
+        clientStatus.text = "VIDEO ACTIV • atinge imaginea pentru a controla Hostul"
     }
 
     override fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState) = runOnUiThread {
@@ -230,11 +241,46 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
         if (pendingRole == "host") hostStatus.text = text else clientStatus.text = text
     }
 
+    override fun onControlChannelStateChanged(state: DataChannel.State) = runOnUiThread {
+        controlStatus.text = when (state) {
+            DataChannel.State.OPEN -> "CANAL CONTROL ACTIV • touch Client → Host"
+            DataChannel.State.CONNECTING -> "Canalul de control se conectează…"
+            DataChannel.State.CLOSING -> "Canalul de control se închide…"
+            DataChannel.State.CLOSED -> "Canalul de control este închis"
+        }
+    }
+
+    override fun onRemoteControlExecuted(success: Boolean) = runOnUiThread {
+        if (!success && pendingRole == "host") {
+            controlStatus.text = "Activează Cosyra Remote Control în Setări → Accesibilitate"
+        }
+    }
+
     override fun onError(message: String) = runOnUiThread { showNetworkError(message) }
 
     private fun closePeerConnection() {
         webRtcSession?.close()
         webRtcSession = null
+    }
+
+    private fun sendTouch(event: MotionEvent): Boolean {
+        if (pendingRole != "client" || remoteRenderer.width <= 0 || remoteRenderer.height <= 0) return false
+        val action = when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> "down"
+            MotionEvent.ACTION_MOVE -> "move"
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> "up"
+            else -> return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) gestureStartedAt = event.eventTime
+        val command = TouchCommand(
+            action = action,
+            x = event.x / remoteRenderer.width.toFloat(),
+            y = event.y / remoteRenderer.height.toFloat(),
+            durationMs = (event.eventTime - gestureStartedAt).coerceAtLeast(1L)
+        )
+        val sent = webRtcSession?.sendTouch(command) == true
+        if (!sent) controlStatus.text = "Canalul de control nu este încă pregătit"
+        return true
     }
 
     private fun showNetworkError(message: String) {
@@ -262,7 +308,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
             })
 
             addView(TextView(context).apply {
-                text = "Telefonul Host rulează jocul. Telefonul Client primește imaginea prin WebRTC."
+                text = "Telefonul Host rulează jocul. Telefonul Client primește imaginea și trimite gesturile tactile prin WebRTC."
                 textSize = 15f
                 setTextColor(muted)
                 gravity = Gravity.CENTER
@@ -286,6 +332,13 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
                 alpha = 0.5f
             }
             addView(stopHostButton, fullWidth(52))
+
+            addView(actionButton("ACTIVEAZĂ CONTROLUL HOST", Color.rgb(64, 82, 112)) {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }, fullWidth(52))
+
+            controlStatus = status("Control Host oprit • activează serviciul de accesibilitate")
+            addView(controlStatus, fullWidth())
 
             addView(title("CONECTARE CLIENT", 13f, cyan).apply {
                 setPadding(0, dp(12), 0, dp(6))
@@ -317,10 +370,11 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
             remoteRenderer = SurfaceViewRenderer(context).apply {
                 visibility = View.GONE
                 setBackgroundColor(Color.BLACK)
+                setOnTouchListener { _, event -> sendTouch(event) }
             }
             addView(remoteRenderer, fullWidth(420))
 
-            addView(status("Versiune 0.6.0 • capturare și redare video WebRTC").apply {
+            addView(status("Versiune 0.7.0 • video și control tactil WebRTC").apply {
                 setTextColor(Color.rgb(92, 112, 135))
             }, fullWidth())
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
