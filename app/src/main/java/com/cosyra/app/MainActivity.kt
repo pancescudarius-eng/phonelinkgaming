@@ -23,8 +23,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.cosyra.app.control.MultiTouchCommand
 import com.cosyra.app.control.RemoteControlAccessibilityService
-import com.cosyra.app.control.TouchCommand
+import com.cosyra.app.control.TouchPointer
 import com.cosyra.app.network.SessionCode
 import com.cosyra.app.network.SignalingClient
 import com.cosyra.app.network.SignalingMessage
@@ -57,7 +58,6 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     private var activeSessionCode: String? = null
     private var pendingRole: String? = null
     private var capturePermissionData: Intent? = null
-    private var gestureStartedAt = 0L
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -226,7 +226,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
 
     override fun onRemoteVideoTrack(track: VideoTrack) = runOnUiThread {
         remoteRenderer.visibility = View.VISIBLE
-        clientStatus.text = "VIDEO ACTIV • atinge imaginea pentru a controla Hostul"
+        clientStatus.text = "VIDEO ACTIV • multitouch până la 10 degete"
     }
 
     override fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState) = runOnUiThread {
@@ -243,7 +243,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
 
     override fun onControlChannelStateChanged(state: DataChannel.State) = runOnUiThread {
         controlStatus.text = when (state) {
-            DataChannel.State.OPEN -> "CANAL CONTROL ACTIV • touch Client → Host"
+            DataChannel.State.OPEN -> "CANAL CONTROL ACTIV • multitouch Client → Host"
             DataChannel.State.CONNECTING -> "Canalul de control se conectează…"
             DataChannel.State.CLOSING -> "Canalul de control se închide…"
             DataChannel.State.CLOSED -> "Canalul de control este închis"
@@ -264,21 +264,46 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     }
 
     private fun sendTouch(event: MotionEvent): Boolean {
-        if (pendingRole != "client" || remoteRenderer.width <= 0 || remoteRenderer.height <= 0) return false
+        if (pendingRole != "client" || remoteRenderer.width <= 0 || remoteRenderer.height <= 0) {
+            return false
+        }
+
         val action = when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> "down"
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> "down"
             MotionEvent.ACTION_MOVE -> "move"
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> "up"
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> "up"
+            MotionEvent.ACTION_CANCEL -> "cancel"
             else -> return true
         }
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) gestureStartedAt = event.eventTime
-        val command = TouchCommand(
-            action = action,
-            x = event.x / remoteRenderer.width.toFloat(),
-            y = event.y / remoteRenderer.height.toFloat(),
-            durationMs = (event.eventTime - gestureStartedAt).coerceAtLeast(1L)
-        )
-        val sent = webRtcSession?.sendTouch(command) == true
+        val actionPointerId = if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            -1
+        } else {
+            event.getPointerId(event.actionIndex)
+        }
+        val pointerCount = event.pointerCount.coerceAtMost(MultiTouchCommand.MAX_POINTERS)
+        val pointers = if (action == "cancel") {
+            emptyList()
+        } else {
+            buildList(pointerCount) {
+                repeat(pointerCount) { index ->
+                    add(
+                        TouchPointer(
+                            id = event.getPointerId(index),
+                            x = event.getX(index) / remoteRenderer.width.toFloat(),
+                            y = event.getY(index) / remoteRenderer.height.toFloat()
+                        )
+                    )
+                }
+            }
+        }
+        val sent = webRtcSession?.sendMultiTouch(
+            MultiTouchCommand(
+                action = action,
+                actionPointerId = actionPointerId,
+                eventTimeMs = event.eventTime,
+                pointers = pointers
+            )
+        ) == true
         if (!sent) controlStatus.text = "Canalul de control nu este încă pregătit"
         return true
     }
@@ -374,7 +399,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
             }
             addView(remoteRenderer, fullWidth(420))
 
-            addView(status("Versiune 0.7.0 • video și control tactil WebRTC").apply {
+            addView(status("Versiune 0.7.0 • video și control multitouch WebRTC").apply {
                 setTextColor(Color.rgb(92, 112, 135))
             }, fullWidth())
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
