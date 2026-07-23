@@ -6,6 +6,9 @@ plugins {
 val signalingUrl = providers.gradleProperty("COSYRA_SIGNALING_URL")
     .orElse("ws://10.0.2.2:8080")
     .get()
+val turnUrl = providers.gradleProperty("COSYRA_TURN_URL").orElse("").get()
+val turnUsername = providers.gradleProperty("COSYRA_TURN_USERNAME").orElse("").get()
+val turnPassword = providers.gradleProperty("COSYRA_TURN_PASSWORD").orElse("").get()
 
 android {
     namespace = "com.cosyra.app"
@@ -15,11 +18,14 @@ android {
         applicationId = "com.cosyra.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 8
+        versionName = "0.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SIGNALING_URL", "\"$signalingUrl\"")
+        buildConfigField("String", "TURN_URL", "\"$turnUrl\"")
+        buildConfigField("String", "TURN_USERNAME", "\"$turnUsername\"")
+        buildConfigField("String", "TURN_PASSWORD", "\"$turnPassword\"")
     }
 
     buildFeatures {
