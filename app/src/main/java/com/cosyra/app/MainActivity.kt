@@ -22,8 +22,13 @@ import androidx.core.content.ContextCompat
 import com.cosyra.app.network.SessionCode
 import com.cosyra.app.network.SignalingClient
 import com.cosyra.app.network.SignalingMessage
+import com.cosyra.app.webrtc.IceCandidatePayload
+import com.cosyra.app.webrtc.SessionDescriptionPayload
+import com.cosyra.app.webrtc.WebRtcSession
+import org.webrtc.PeerConnection
+import org.webrtc.VideoTrack
 
-class MainActivity : AppCompatActivity(), SignalingClient.Listener {
+class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSession.Listener {
 
     private val background = Color.rgb(5, 10, 18)
     private val panel = Color.rgb(10, 23, 40)
@@ -38,6 +43,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
     private lateinit var stopHostButton: Button
 
     private var signalingClient: SignalingClient? = null
+    private var webRtcSession: WebRtcSession? = null
     private var activeSessionCode: String? = null
     private var pendingRole: String? = null
 
@@ -70,6 +76,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
     }
 
     private fun beginHostSession() {
+        closePeerConnection()
         activeSessionCode = SessionCode.generate()
         pendingRole = "host"
         sessionCodeView.text = "COD SESIUNE: ${activeSessionCode}"
@@ -79,6 +86,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
     }
 
     private fun joinSession(code: String) {
+        closePeerConnection()
         activeSessionCode = code
         pendingRole = "client"
         clientStatus.text = "Se conectează la sesiunea $code…"
@@ -90,12 +98,16 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
         signalingClient = SignalingClient(BuildConfig.SIGNALING_URL, this).also { it.connect() }
     }
 
+    private fun ensurePeerConnection(): WebRtcSession =
+        webRtcSession ?: WebRtcSession(applicationContext, this).also { webRtcSession = it }
+
     private fun stopScreenCapture() {
         startService(Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_STOP
         })
         signalingClient?.close()
         signalingClient = null
+        closePeerConnection()
         activeSessionCode = null
         pendingRole = null
         sessionCodeView.text = "COD SESIUNE: —"
@@ -111,11 +123,36 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
     override fun onMessage(message: SignalingMessage) = runOnUiThread {
         when (message.type) {
             "host_ready" -> hostStatus.text = "HOST ACTIV • aștept clientul • cod ${message.sessionCode}"
-            "client_joined", "peer_joined" -> {
-                hostStatus.text = "CONECTAT • clientul a intrat în sesiune"
-                clientStatus.text = "CONECTAT • sesiunea ${message.sessionCode}"
+            "client_joined" -> {
+                ensurePeerConnection()
+                clientStatus.text = "Sesiune găsită • pregătesc WebRTC…"
+            }
+            "peer_joined" -> {
+                ensurePeerConnection()
+                if (pendingRole == "host") {
+                    hostStatus.text = "CLIENT CONECTAT • negociez fluxul WebRTC…"
+                    webRtcSession?.createOffer()
+                } else {
+                    clientStatus.text = "HOST CONECTAT • aștept oferta video…"
+                }
+            }
+            "webrtc_offer" -> {
+                val payload = message.payload ?: return@runOnUiThread
+                val session = ensurePeerConnection()
+                session.setRemoteDescription(SessionDescriptionPayload.fromJson(payload)) {
+                    session.createAnswer()
+                }
+            }
+            "webrtc_answer" -> {
+                val payload = message.payload ?: return@runOnUiThread
+                ensurePeerConnection().setRemoteDescription(SessionDescriptionPayload.fromJson(payload))
+            }
+            "webrtc_ice" -> {
+                val payload = message.payload ?: return@runOnUiThread
+                ensurePeerConnection().addRemoteIceCandidate(IceCandidatePayload.fromJson(payload))
             }
             "peer_left" -> {
+                closePeerConnection()
                 hostStatus.text = "Client deconectat • sesiunea rămâne deschisă"
                 clientStatus.text = "Hostul s-a deconectat"
             }
@@ -129,11 +166,46 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
         if (pendingRole == "client") clientStatus.text = "Conexiunea a fost închisă"
     }
 
+    override fun onLocalDescription(payload: SessionDescriptionPayload) {
+        val code = activeSessionCode ?: return
+        val type = if (payload.type.equals("offer", true)) "webrtc_offer" else "webrtc_answer"
+        signalingClient?.send(SignalingMessage(type, code, payload.toJson()))
+    }
+
+    override fun onLocalIceCandidate(payload: IceCandidatePayload) {
+        val code = activeSessionCode ?: return
+        signalingClient?.send(SignalingMessage("webrtc_ice", code, payload.toJson()))
+    }
+
+    override fun onRemoteVideoTrack(track: VideoTrack) = runOnUiThread {
+        clientStatus.text = "VIDEO PRIMIT • rendererul este următoarea etapă"
+    }
+
+    override fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState) = runOnUiThread {
+        val text = when (state) {
+            PeerConnection.PeerConnectionState.CONNECTED -> "WEBRTC CONECTAT • canal securizat activ"
+            PeerConnection.PeerConnectionState.CONNECTING -> "WebRTC se conectează…"
+            PeerConnection.PeerConnectionState.DISCONNECTED -> "WebRTC deconectat temporar"
+            PeerConnection.PeerConnectionState.FAILED -> "WebRTC a eșuat"
+            PeerConnection.PeerConnectionState.CLOSED -> "WebRTC închis"
+            else -> "WebRTC: ${state.name.lowercase()}"
+        }
+        if (pendingRole == "host") hostStatus.text = text else clientStatus.text = text
+    }
+
+    override fun onError(message: String) = runOnUiThread { showNetworkError(message) }
+
+    private fun closePeerConnection() {
+        webRtcSession?.close()
+        webRtcSession = null
+    }
+
     private fun showNetworkError(message: String) {
         val readable = when (message) {
             "session_not_found" -> "Codul nu există sau Hostul nu este online."
             "session_full" -> "Sesiunea are deja un Client conectat."
             "session_exists" -> "Codul a fost deja folosit. Încearcă din nou."
+            "peer_not_connected" -> "Celălalt telefon nu este încă pregătit."
             else -> "Conexiune eșuată: $message"
         }
         if (pendingRole == "host") hostStatus.text = readable else clientStatus.text = readable
@@ -266,7 +338,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
             addView(clientStatus, fullWidth())
 
             addView(TextView(context).apply {
-                text = "Versiune 0.4.0 • semnalizare Host–Client implementată"
+                text = "Versiune 0.5.0 • negociere WebRTC offer/answer/ICE"
                 textSize = 12f
                 setTextColor(Color.rgb(92, 112, 135))
                 gravity = Gravity.CENTER
@@ -295,6 +367,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener {
     override fun onDestroy() {
         signalingClient?.close()
         signalingClient = null
+        closePeerConnection()
         super.onDestroy()
     }
 
