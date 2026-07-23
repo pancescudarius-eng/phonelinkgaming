@@ -13,11 +13,21 @@ permissions:
 jobs:
   android-build-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Diagnose network and DNS
+        run: |
+          echo "--- resolv.conf ---"
+          cat /etc/resolv.conf || true
+          echo "--- DNS lookups ---"
+          getent hosts github.com || true
+          getent hosts services.gradle.org || true
+          getent hosts repo.maven.apache.org || true
+          getent hosts dl.google.com || true
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -31,8 +41,21 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Run unit tests and build debug APK
-        run: gradle --no-daemon clean testDebugUnitTest assembleDebug
+      - name: Run unit tests and build debug APK with retries
+        shell: bash
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "Gradle attempt $attempt of 3"
+            if gradle --no-daemon --stacktrace testDebugUnitTest assembleDebug; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Build failed; waiting before retry in case DNS/network is transient"
+              sleep $((attempt * 20))
+            fi
+          done
+          exit 1
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -44,7 +67,7 @@ jobs:
 
   signaling-server-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: signaling-server
@@ -60,8 +83,17 @@ jobs:
           cache: npm
           cache-dependency-path: signaling-server/package.json
 
-      - name: Install server dependencies
-        run: npm install
+      - name: Install server dependencies with retries
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            echo "npm attempt $attempt of 3"
+            if npm install --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000; then
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          exit 1
 
       - name: Validate server syntax
         run: node --check server.js
@@ -72,4 +104,4 @@ jobs:
           SERVER_PID=$!
           trap 'kill $SERVER_PID' EXIT
           sleep 2
-          curl --fail http://127.0.0.1:8080/health
+          curl --fail --retry 3 --retry-delay 2 http://127.0.0.1:8080/health
