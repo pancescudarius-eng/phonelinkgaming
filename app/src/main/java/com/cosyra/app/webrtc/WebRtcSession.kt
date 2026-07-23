@@ -75,14 +75,11 @@ class WebRtcSession(
             )
             .createPeerConnectionFactory()
 
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
-
-        val configuration = PeerConnection.RTCConfiguration(iceServers).apply {
+        val configuration = PeerConnection.RTCConfiguration(IceServerConfig.create()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         }
 
         peerConnection = requireNotNull(
