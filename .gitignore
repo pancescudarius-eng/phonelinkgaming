@@ -1,0 +1,8 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+turn-server/.env
+*.jks
+*.keystore
