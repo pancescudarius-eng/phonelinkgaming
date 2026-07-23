@@ -1,8 +1,12 @@
 package com.cosyra.app
 
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.text.InputFilter
 import android.view.Gravity
@@ -12,7 +16,9 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -22,9 +28,43 @@ class MainActivity : AppCompatActivity() {
     private val cyan = Color.rgb(0, 194, 255)
     private val muted = Color.rgb(166, 184, 204)
 
+    private lateinit var hostStatus: TextView
+    private lateinit var startHostButton: Button
+    private lateinit var stopHostButton: Button
+
+    private val screenCaptureLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val resultData = result.data
+            if (result.resultCode == Activity.RESULT_OK && resultData != null) {
+                val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_START
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, resultData)
+                }
+                ContextCompat.startForegroundService(this, serviceIntent)
+                showHostRunning()
+            } else {
+                showHostStopped("Capturarea a fost anulată.")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(createContent())
+    }
+
+    private fun requestScreenCapture() {
+        val projectionManager =
+            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        hostStatus.text = "Aștept permisiunea Android pentru capturarea ecranului…"
+        screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+    }
+
+    private fun stopScreenCapture() {
+        startService(Intent(this, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_STOP
+        })
+        showHostStopped("Host oprit. Ecranul nu mai este capturat.")
     }
 
     private fun createContent(): LinearLayout {
@@ -64,21 +104,38 @@ class MainActivity : AppCompatActivity() {
                 background = roundedPanel()
             }, fullWidth())
 
-            addView(Button(context).apply {
+            hostStatus = TextView(context).apply {
+                text = "Host inactiv • ecranul nu este capturat"
+                textSize = 13f
+                setTextColor(muted)
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            addView(hostStatus, fullWidth())
+
+            startHostButton = Button(context).apply {
                 text = "PORNEȘTE CA HOST"
                 isAllCaps = false
                 typeface = Typeface.DEFAULT_BOLD
                 textSize = 16f
                 setTextColor(Color.WHITE)
                 background = roundedButton(blue)
-                setOnClickListener {
-                    Toast.makeText(
-                        context,
-                        "Urmează acordul Android pentru capturarea ecranului.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }, fullWidth(heightDp = 56))
+                setOnClickListener { requestScreenCapture() }
+            }
+            addView(startHostButton, fullWidth(heightDp = 56))
+
+            stopHostButton = Button(context).apply {
+                text = "OPREȘTE HOST"
+                isAllCaps = false
+                typeface = Typeface.DEFAULT_BOLD
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                background = roundedButton(Color.rgb(120, 28, 45))
+                isEnabled = false
+                alpha = 0.5f
+                setOnClickListener { stopScreenCapture() }
+            }
+            addView(stopHostButton, fullWidth(heightDp = 52))
 
             addView(TextView(context).apply {
                 text = "CONECTARE CLIENT"
@@ -126,13 +183,32 @@ class MainActivity : AppCompatActivity() {
             }, fullWidth(heightDp = 56))
 
             addView(TextView(context).apply {
-                text = "Fundație 0.1.1 • conexiune prin internet în dezvoltare"
+                text = "Fundație 0.2.0 • capturare Host implementată"
                 textSize = 12f
                 setTextColor(Color.rgb(92, 112, 135))
                 gravity = Gravity.CENTER
                 setPadding(0, dp(20), 0, 0)
             }, fullWidth())
         }
+    }
+
+    private fun showHostRunning() {
+        hostStatus.text = "HOST ACTIV • capturarea ecranului rulează"
+        hostStatus.setTextColor(cyan)
+        startHostButton.isEnabled = false
+        startHostButton.alpha = 0.5f
+        stopHostButton.isEnabled = true
+        stopHostButton.alpha = 1f
+        Toast.makeText(this, "Cosyra Host a pornit.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showHostStopped(message: String) {
+        hostStatus.text = message
+        hostStatus.setTextColor(muted)
+        startHostButton.isEnabled = true
+        startHostButton.alpha = 1f
+        stopHostButton.isEnabled = false
+        stopHostButton.alpha = 0.5f
     }
 
     private fun roundedPanel() = GradientDrawable().apply {
