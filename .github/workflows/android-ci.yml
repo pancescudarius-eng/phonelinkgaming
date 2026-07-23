@@ -1,4 +1,4 @@
-name: Android CI
+name: Cosyra CI
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  android-build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -41,3 +41,35 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  signaling-server-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: signaling-server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: signaling-server/package.json
+
+      - name: Install server dependencies
+        run: npm install
+
+      - name: Validate server syntax
+        run: node --check server.js
+
+      - name: Verify server health endpoint
+        run: |
+          node server.js > /tmp/cosyra-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID' EXIT
+          sleep 2
+          curl --fail http://127.0.0.1:8080/health
