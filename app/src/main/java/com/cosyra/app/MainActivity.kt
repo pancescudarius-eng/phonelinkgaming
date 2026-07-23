@@ -19,8 +19,11 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.cosyra.app.network.SessionCode
+import com.cosyra.app.network.SignalingClient
+import com.cosyra.app.network.SignalingMessage
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SignalingClient.Listener {
 
     private val background = Color.rgb(5, 10, 18)
     private val panel = Color.rgb(10, 23, 40)
@@ -29,8 +32,14 @@ class MainActivity : AppCompatActivity() {
     private val muted = Color.rgb(166, 184, 204)
 
     private lateinit var hostStatus: TextView
+    private lateinit var sessionCodeView: TextView
+    private lateinit var clientStatus: TextView
     private lateinit var startHostButton: Button
     private lateinit var stopHostButton: Button
+
+    private var signalingClient: SignalingClient? = null
+    private var activeSessionCode: String? = null
+    private var pendingRole: String? = null
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -42,7 +51,7 @@ class MainActivity : AppCompatActivity() {
                     putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, resultData)
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
-                showHostRunning()
+                beginHostSession()
             } else {
                 showHostStopped("Capturarea a fost anulată.")
             }
@@ -60,16 +69,78 @@ class MainActivity : AppCompatActivity() {
         screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
 
+    private fun beginHostSession() {
+        activeSessionCode = SessionCode.generate()
+        pendingRole = "host"
+        sessionCodeView.text = "COD SESIUNE: ${activeSessionCode}"
+        hostStatus.text = "Se conectează la serverul Cosyra…"
+        connectSignaling()
+        showHostRunning()
+    }
+
+    private fun joinSession(code: String) {
+        activeSessionCode = code
+        pendingRole = "client"
+        clientStatus.text = "Se conectează la sesiunea $code…"
+        connectSignaling()
+    }
+
+    private fun connectSignaling() {
+        signalingClient?.close()
+        signalingClient = SignalingClient(BuildConfig.SIGNALING_URL, this).also { it.connect() }
+    }
+
     private fun stopScreenCapture() {
         startService(Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_STOP
         })
+        signalingClient?.close()
+        signalingClient = null
+        activeSessionCode = null
+        pendingRole = null
+        sessionCodeView.text = "COD SESIUNE: —"
         showHostStopped("Host oprit. Ecranul nu mai este capturat.")
+    }
+
+    override fun onOpen() {
+        val code = activeSessionCode ?: return
+        val type = if (pendingRole == "host") "host_create" else "client_join"
+        signalingClient?.send(SignalingMessage(type, code))
+    }
+
+    override fun onMessage(message: SignalingMessage) = runOnUiThread {
+        when (message.type) {
+            "host_ready" -> hostStatus.text = "HOST ACTIV • aștept clientul • cod ${message.sessionCode}"
+            "client_joined", "peer_joined" -> {
+                hostStatus.text = "CONECTAT • clientul a intrat în sesiune"
+                clientStatus.text = "CONECTAT • sesiunea ${message.sessionCode}"
+            }
+            "peer_left" -> {
+                hostStatus.text = "Client deconectat • sesiunea rămâne deschisă"
+                clientStatus.text = "Hostul s-a deconectat"
+            }
+            "error" -> showNetworkError(message.payload ?: "Eroare necunoscută")
+        }
+    }
+
+    override fun onFailure(message: String) = runOnUiThread { showNetworkError(message) }
+
+    override fun onClosed() = runOnUiThread {
+        if (pendingRole == "client") clientStatus.text = "Conexiunea a fost închisă"
+    }
+
+    private fun showNetworkError(message: String) {
+        val readable = when (message) {
+            "session_not_found" -> "Codul nu există sau Hostul nu este online."
+            "session_full" -> "Sesiunea are deja un Client conectat."
+            "session_exists" -> "Codul a fost deja folosit. Încearcă din nou."
+            else -> "Conexiune eșuată: $message"
+        }
+        if (pendingRole == "host") hostStatus.text = readable else clientStatus.text = readable
     }
 
     private fun createContent(): LinearLayout {
         val padding = dp(24)
-
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -92,11 +163,11 @@ class MainActivity : AppCompatActivity() {
                 letterSpacing = 0.08f
                 setTextColor(cyan)
                 gravity = Gravity.CENTER
-                setPadding(0, dp(4), 0, dp(26))
+                setPadding(0, dp(4), 0, dp(20))
             }, fullWidth())
 
             addView(TextView(context).apply {
-                text = "Transformă telefonul care rulează jocul într-un Host și joacă de la distanță de pe al doilea telefon."
+                text = "Telefonul Host rulează jocul. Telefonul Client va primi imaginea și va trimite comenzile."
                 textSize = 15f
                 setTextColor(muted)
                 gravity = Gravity.CENTER
@@ -104,12 +175,23 @@ class MainActivity : AppCompatActivity() {
                 background = roundedPanel()
             }, fullWidth())
 
+            sessionCodeView = TextView(context).apply {
+                text = "COD SESIUNE: —"
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                letterSpacing = 0.08f
+                setTextColor(cyan)
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(4))
+            }
+            addView(sessionCodeView, fullWidth())
+
             hostStatus = TextView(context).apply {
                 text = "Host inactiv • ecranul nu este capturat"
                 textSize = 13f
                 setTextColor(muted)
                 gravity = Gravity.CENTER
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(12), dp(8), dp(12), dp(8))
             }
             addView(hostStatus, fullWidth())
 
@@ -122,7 +204,7 @@ class MainActivity : AppCompatActivity() {
                 background = roundedButton(blue)
                 setOnClickListener { requestScreenCapture() }
             }
-            addView(startHostButton, fullWidth(heightDp = 56))
+            addView(startHostButton, fullWidth(56))
 
             stopHostButton = Button(context).apply {
                 text = "OPREȘTE HOST"
@@ -135,7 +217,7 @@ class MainActivity : AppCompatActivity() {
                 alpha = 0.5f
                 setOnClickListener { stopScreenCapture() }
             }
-            addView(stopHostButton, fullWidth(heightDp = 52))
+            addView(stopHostButton, fullWidth(52))
 
             addView(TextView(context).apply {
                 text = "CONECTARE CLIENT"
@@ -144,7 +226,7 @@ class MainActivity : AppCompatActivity() {
                 letterSpacing = 0.08f
                 setTextColor(cyan)
                 gravity = Gravity.CENTER
-                setPadding(0, dp(18), 0, dp(6))
+                setPadding(0, dp(12), 0, dp(6))
             }, fullWidth())
 
             val codeInput = EditText(context).apply {
@@ -159,7 +241,7 @@ class MainActivity : AppCompatActivity() {
                 background = roundedOutline()
                 setPadding(dp(16), 0, dp(16), 0)
             }
-            addView(codeInput, fullWidth(heightDp = 56))
+            addView(codeInput, fullWidth(56))
 
             addView(Button(context).apply {
                 text = "CONECTEAZĂ-TE"
@@ -170,31 +252,30 @@ class MainActivity : AppCompatActivity() {
                 background = roundedButton(Color.rgb(9, 75, 145))
                 setOnClickListener {
                     val code = codeInput.text.toString().trim()
-                    if (code.length != 6 || code.any { !it.isDigit() }) {
-                        codeInput.error = "Introdu exact 6 cifre"
-                    } else {
-                        Toast.makeText(
-                            context,
-                            "Se pregătește conexiunea securizată pentru sesiunea $code.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
+                    if (!SessionCode.isValid(code)) codeInput.error = "Introdu exact 6 cifre"
+                    else joinSession(code)
                 }
-            }, fullWidth(heightDp = 56))
+            }, fullWidth(56))
+
+            clientStatus = TextView(context).apply {
+                text = "Client inactiv"
+                textSize = 13f
+                setTextColor(muted)
+                gravity = Gravity.CENTER
+            }
+            addView(clientStatus, fullWidth())
 
             addView(TextView(context).apply {
-                text = "Fundație 0.2.0 • capturare Host implementată"
+                text = "Versiune 0.4.0 • semnalizare Host–Client implementată"
                 textSize = 12f
                 setTextColor(Color.rgb(92, 112, 135))
                 gravity = Gravity.CENTER
-                setPadding(0, dp(20), 0, 0)
+                setPadding(0, dp(12), 0, 0)
             }, fullWidth())
         }
     }
 
     private fun showHostRunning() {
-        hostStatus.text = "HOST ACTIV • capturarea ecranului rulează"
-        hostStatus.setTextColor(cyan)
         startHostButton.isEnabled = false
         startHostButton.alpha = 0.5f
         stopHostButton.isEnabled = true
@@ -211,21 +292,24 @@ class MainActivity : AppCompatActivity() {
         stopHostButton.alpha = 0.5f
     }
 
+    override fun onDestroy() {
+        signalingClient?.close()
+        signalingClient = null
+        super.onDestroy()
+    }
+
     private fun roundedPanel() = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(18).toFloat()
         setColor(panel)
         setStroke(dp(1), Color.rgb(18, 70, 115))
     }
 
     private fun roundedButton(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(16).toFloat()
         setColor(color)
     }
 
     private fun roundedOutline() = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(16).toFloat()
         setColor(Color.rgb(7, 17, 29))
         setStroke(dp(2), blue)
@@ -235,10 +319,7 @@ class MainActivity : AppCompatActivity() {
         LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             heightDp?.let(::dp) ?: ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            bottomMargin = dp(12)
-        }
+        ).apply { bottomMargin = dp(12) }
 
-    private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }
