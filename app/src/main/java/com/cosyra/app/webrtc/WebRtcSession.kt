@@ -3,6 +3,8 @@ package com.cosyra.app.webrtc
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
+import com.cosyra.app.control.RemoteControlAccessibilityService
+import com.cosyra.app.control.TouchCommand
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -21,6 +23,8 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoCapturer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
 
 class WebRtcSession(
     context: Context,
@@ -31,6 +35,8 @@ class WebRtcSession(
         fun onLocalIceCandidate(payload: IceCandidatePayload)
         fun onRemoteVideoTrack(track: VideoTrack)
         fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState)
+        fun onControlChannelStateChanged(state: DataChannel.State)
+        fun onRemoteControlExecuted(success: Boolean)
         fun onError(message: String)
     }
 
@@ -38,7 +44,7 @@ class WebRtcSession(
     private val eglBase = EglBase.create()
     private val factory: PeerConnectionFactory
     private val peerConnection: PeerConnection
-    private val controlChannel: DataChannel
+    private var controlChannel: DataChannel? = null
 
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
@@ -83,7 +89,14 @@ class WebRtcSession(
             factory.createPeerConnection(configuration, observer())
         ) { "WebRTC PeerConnection could not be created" }
 
-        controlChannel = peerConnection.createDataChannel("cosyra-control", DataChannel.Init())
+        attachControlChannel(
+            peerConnection.createDataChannel(
+                "cosyra-control",
+                DataChannel.Init().apply {
+                    ordered = true
+                }
+            )
+        )
     }
 
     fun initializeRenderer(view: SurfaceViewRenderer) {
@@ -145,6 +158,13 @@ class WebRtcSession(
         surfaceTextureHelper = null
     }
 
+    fun sendTouch(command: TouchCommand): Boolean {
+        val channel = controlChannel ?: return false
+        if (channel.state() != DataChannel.State.OPEN) return false
+        val bytes = command.toJson().toByteArray(StandardCharsets.UTF_8)
+        return channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
+    }
+
     fun addLocalAudioTrack() {
         if (audioTrack != null) return
         audioSource = factory.createAudioSource(MediaConstraints())
@@ -204,8 +224,9 @@ class WebRtcSession(
         remoteVideoTrack = null
         renderer?.release()
         renderer = null
-        controlChannel.close()
-        controlChannel.dispose()
+        controlChannel?.close()
+        controlChannel?.dispose()
+        controlChannel = null
         audioTrack?.dispose()
         audioTrack = null
         audioSource?.dispose()
@@ -214,6 +235,31 @@ class WebRtcSession(
         peerConnection.dispose()
         factory.dispose()
         eglBase.release()
+    }
+
+    private fun attachControlChannel(channel: DataChannel) {
+        if (controlChannel !== channel) {
+            controlChannel?.close()
+            controlChannel?.dispose()
+            controlChannel = channel
+        }
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) = Unit
+
+            override fun onStateChange() {
+                listener.onControlChannelStateChanged(channel.state())
+            }
+
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                if (buffer.binary) return
+                val data = ByteArray(buffer.data.remaining())
+                buffer.data.get(data)
+                val command = TouchCommand.fromJson(String(data, StandardCharsets.UTF_8)) ?: return
+                val success = RemoteControlAccessibilityService.dispatch(command)
+                listener.onRemoteControlExecuted(success)
+            }
+        })
+        listener.onControlChannelStateChanged(channel.state())
     }
 
     private fun setLocalDescription(description: SessionDescription) {
@@ -245,7 +291,11 @@ class WebRtcSession(
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
-        override fun onDataChannel(channel: DataChannel) = Unit
+
+        override fun onDataChannel(channel: DataChannel) {
+            attachControlChannel(channel)
+        }
+
         override fun onRenegotiationNeeded() = Unit
 
         override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) {
