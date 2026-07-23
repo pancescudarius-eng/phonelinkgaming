@@ -1,17 +1,25 @@
 package com.cosyra.app.webrtc
 
 import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjection
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
+import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
+import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
+import org.webrtc.SurfaceTextureHelper
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoCapturer
+import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 
 class WebRtcSession(
@@ -26,20 +34,40 @@ class WebRtcSession(
         fun onError(message: String)
     }
 
+    private val appContext = context.applicationContext
+    private val eglBase = EglBase.create()
     private val factory: PeerConnectionFactory
     private val peerConnection: PeerConnection
     private val controlChannel: DataChannel
+
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
+    private var videoSource: VideoSource? = null
+    private var localVideoTrack: VideoTrack? = null
+    private var screenCapturer: VideoCapturer? = null
+    private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    private var remoteVideoTrack: VideoTrack? = null
+    private var renderer: SurfaceViewRenderer? = null
 
     init {
         PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+            PeerConnectionFactory.InitializationOptions.builder(appContext)
                 .setEnableInternalTracer(false)
                 .createInitializationOptions()
         )
 
-        factory = PeerConnectionFactory.builder().createPeerConnectionFactory()
+        factory = PeerConnectionFactory.builder()
+            .setVideoEncoderFactory(
+                org.webrtc.DefaultVideoEncoderFactory(
+                    eglBase.eglBaseContext,
+                    true,
+                    true
+                )
+            )
+            .setVideoDecoderFactory(
+                org.webrtc.DefaultVideoDecoderFactory(eglBase.eglBaseContext)
+            )
+            .createPeerConnectionFactory()
 
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
@@ -58,16 +86,71 @@ class WebRtcSession(
         controlChannel = peerConnection.createDataChannel("cosyra-control", DataChannel.Init())
     }
 
+    fun initializeRenderer(view: SurfaceViewRenderer) {
+        if (renderer === view) return
+        renderer?.release()
+        renderer = view.apply {
+            init(eglBase.eglBaseContext, null)
+            setEnableHardwareScaler(true)
+            setMirror(false)
+        }
+        remoteVideoTrack?.addSink(view)
+    }
+
+    fun startScreenShare(permissionData: Intent, width: Int, height: Int, fps: Int = 30) {
+        if (screenCapturer != null) return
+
+        val capturer = ScreenCapturerAndroid(
+            Intent(permissionData),
+            object : MediaProjection.Callback() {
+                override fun onStop() {
+                    listener.onError("Android a oprit permisiunea de capturare a ecranului.")
+                    stopScreenShare()
+                }
+            }
+        )
+
+        val source = factory.createVideoSource(true)
+        val helper = SurfaceTextureHelper.create("CosyraScreenCapture", eglBase.eglBaseContext)
+
+        runCatching {
+            capturer.initialize(helper, appContext, source.capturerObserver)
+            capturer.startCapture(width.coerceAtLeast(1), height.coerceAtLeast(1), fps.coerceIn(15, 60))
+            val track = factory.createVideoTrack("cosyra-screen", source)
+            peerConnection.addTrack(track, listOf("cosyra-stream"))
+
+            screenCapturer = capturer
+            surfaceTextureHelper = helper
+            videoSource = source
+            localVideoTrack = track
+        }.onFailure { error ->
+            runCatching { capturer.dispose() }
+            helper.dispose()
+            source.dispose()
+            listener.onError("Capturarea WebRTC nu a pornit: ${error.message ?: "eroare necunoscută"}")
+        }
+    }
+
+    fun stopScreenShare() {
+        val capturer = screenCapturer
+        screenCapturer = null
+        runCatching { capturer?.stopCapture() }
+        runCatching { capturer?.dispose() }
+
+        localVideoTrack?.dispose()
+        localVideoTrack = null
+        videoSource?.dispose()
+        videoSource = null
+        surfaceTextureHelper?.dispose()
+        surfaceTextureHelper = null
+    }
+
     fun addLocalAudioTrack() {
         if (audioTrack != null) return
         audioSource = factory.createAudioSource(MediaConstraints())
         audioTrack = factory.createAudioTrack("cosyra-audio", audioSource).also { track ->
             peerConnection.addTrack(track, listOf("cosyra-stream"))
         }
-    }
-
-    fun addLocalVideoTrack(track: VideoTrack) {
-        peerConnection.addTrack(track, listOf("cosyra-stream"))
     }
 
     fun createOffer() {
@@ -99,7 +182,10 @@ class WebRtcSession(
         }
 
         peerConnection.setRemoteDescription(object : SimpleSdpObserver() {
-            override fun onSetSuccess() { onApplied?.invoke() }
+            override fun onSetSuccess() {
+                onApplied?.invoke()
+            }
+
             override fun onSetFailure(error: String) {
                 listener.onError("SDP-ul de la celălalt telefon nu a putut fi aplicat: $error")
             }
@@ -107,10 +193,17 @@ class WebRtcSession(
     }
 
     fun addRemoteIceCandidate(payload: IceCandidatePayload) {
-        peerConnection.addIceCandidate(IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.candidate))
+        peerConnection.addIceCandidate(
+            IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.candidate)
+        )
     }
 
     fun close() {
+        stopScreenShare()
+        remoteVideoTrack?.let { track -> renderer?.let(track::removeSink) }
+        remoteVideoTrack = null
+        renderer?.release()
+        renderer = null
         controlChannel.close()
         controlChannel.dispose()
         audioTrack?.dispose()
@@ -120,6 +213,7 @@ class WebRtcSession(
         peerConnection.close()
         peerConnection.dispose()
         factory.dispose()
+        eglBase.release()
     }
 
     private fun setLocalDescription(description: SessionDescription) {
@@ -141,19 +235,27 @@ class WebRtcSession(
         override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) = Unit
+
         override fun onIceCandidate(candidate: IceCandidate) {
             listener.onLocalIceCandidate(
                 IceCandidatePayload(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
             )
         }
+
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
         override fun onDataChannel(channel: DataChannel) = Unit
         override fun onRenegotiationNeeded() = Unit
+
         override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) {
-            (receiver.track() as? VideoTrack)?.let(listener::onRemoteVideoTrack)
+            (receiver.track() as? VideoTrack)?.let { track ->
+                remoteVideoTrack = track
+                renderer?.let(track::addSink)
+                listener.onRemoteVideoTrack(track)
+            }
         }
+
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
             listener.onConnectionStateChanged(newState)
         }
