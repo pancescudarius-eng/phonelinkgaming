@@ -84,7 +84,7 @@ class RemoteControlAccessibilityService : AccessibilityService() {
 
     private fun processNextFrame() {
         if (frameInFlight) return
-        val command = pendingFrames.removeFirstOrNull() ?: return
+        val command = pendingFrames.pollFirst() ?: return
         if (command.action.equals("cancel", ignoreCase = true)) {
             resetMultitouchState()
             processNextFrame()
