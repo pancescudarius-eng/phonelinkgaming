@@ -3,9 +3,11 @@
     <style name="Theme.Cosyra" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#10131A</item>
-        <item name="android:navigationBarColor">#10131A</item>
-        <item name="colorPrimary">#8B7CFF</item>
-        <item name="colorSecondary">#62D9FF</item>
+        <item name="android:statusBarColor">#050A12</item>
+        <item name="android:navigationBarColor">#050A12</item>
+        <item name="android:windowBackground">#050A12</item>
+        <item name="colorPrimary">#168BFF</item>
+        <item name="colorSecondary">#00C2FF</item>
+        <item name="colorTertiary">#72E4FF</item>
     </style>
 </resources>
