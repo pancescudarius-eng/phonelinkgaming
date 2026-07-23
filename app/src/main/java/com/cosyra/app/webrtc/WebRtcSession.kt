@@ -3,6 +3,7 @@ package com.cosyra.app.webrtc
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
+import com.cosyra.app.control.GamepadCommand
 import com.cosyra.app.control.MultiTouchCommand
 import com.cosyra.app.control.RemoteControlAccessibilityService
 import com.cosyra.app.control.TouchCommand
@@ -38,6 +39,7 @@ class WebRtcSession(
         fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState)
         fun onControlChannelStateChanged(state: DataChannel.State)
         fun onRemoteControlExecuted(success: Boolean)
+        fun onRemoteGamepadCommand(command: GamepadCommand)
         fun onError(message: String)
     }
 
@@ -160,6 +162,8 @@ class WebRtcSession(
 
     fun sendMultiTouch(command: MultiTouchCommand): Boolean = sendControlPayload(command.toJson())
 
+    fun sendGamepad(command: GamepadCommand): Boolean = sendControlPayload(command.toJson())
+
     private fun sendControlPayload(payload: String): Boolean {
         val channel = controlChannel ?: return false
         if (channel.state() != DataChannel.State.OPEN) return false
@@ -257,6 +261,10 @@ class WebRtcSession(
                 val data = ByteArray(buffer.data.remaining())
                 buffer.data.get(data)
                 val raw = String(data, StandardCharsets.UTF_8)
+                GamepadCommand.fromJson(raw)?.let {
+                    listener.onRemoteGamepadCommand(it)
+                    return
+                }
                 val success = MultiTouchCommand.fromJson(raw)?.let {
                     RemoteControlAccessibilityService.dispatch(it)
                 } ?: TouchCommand.fromJson(raw)?.let {
