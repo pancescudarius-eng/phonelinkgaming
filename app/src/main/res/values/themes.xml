@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Cosyra" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#10131A</item>
+        <item name="android:navigationBarColor">#10131A</item>
+        <item name="colorPrimary">#8B7CFF</item>
+        <item name="colorSecondary">#62D9FF</item>
+    </style>
+</resources>
