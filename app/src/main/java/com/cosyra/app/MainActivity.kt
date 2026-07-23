@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.InputFilter
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -23,6 +24,8 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.cosyra.app.control.GamepadCommand
+import com.cosyra.app.control.GamepadInputMapper
 import com.cosyra.app.control.MultiTouchCommand
 import com.cosyra.app.control.RemoteControlAccessibilityService
 import com.cosyra.app.control.TouchPointer
@@ -36,6 +39,7 @@ import org.webrtc.DataChannel
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSession.Listener {
 
@@ -58,6 +62,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     private var activeSessionCode: String? = null
     private var pendingRole: String? = null
     private var capturePermissionData: Intent? = null
+    private val lastGamepadAxes = mutableMapOf<Int, Float>()
 
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -90,6 +95,37 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
                 "Control Host oprit • activează serviciul de accesibilitate"
             }
         }
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (pendingRole == "client" && GamepadInputMapper.isControllerEvent(event)) {
+            var handled = false
+            GamepadInputMapper.axes(event).forEach { command ->
+                val previous = lastGamepadAxes[command.code]
+                if (previous == null || abs(previous - command.value) >= 0.01f) {
+                    if (webRtcSession?.sendGamepad(command) == true) {
+                        lastGamepadAxes[command.code] = command.value
+                        handled = true
+                    }
+                }
+            }
+            if (handled) {
+                controlStatus.text = "CONTROLLER ACTIV • axe trimise către Host"
+                return true
+            }
+        }
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (pendingRole == "client") {
+            val command = GamepadInputMapper.button(event)
+            if (command != null && webRtcSession?.sendGamepad(command) == true) {
+                controlStatus.text = "CONTROLLER ACTIV • buton ${command.code} trimis"
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun requestScreenCapture() {
@@ -127,6 +163,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
         closePeerConnection()
         pendingRole = "client"
         activeSessionCode = code
+        lastGamepadAxes.clear()
         remoteRenderer.visibility = View.VISIBLE
         clientStatus.text = "Se conectează la sesiunea $code…"
         ensurePeerConnection()
@@ -154,6 +191,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
         capturePermissionData = null
         activeSessionCode = null
         pendingRole = null
+        lastGamepadAxes.clear()
         remoteRenderer.visibility = View.GONE
         sessionCodeView.text = "COD SESIUNE: —"
         showHostStopped("Host oprit. Ecranul nu mai este transmis.")
@@ -226,7 +264,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
 
     override fun onRemoteVideoTrack(track: VideoTrack) = runOnUiThread {
         remoteRenderer.visibility = View.VISIBLE
-        clientStatus.text = "VIDEO ACTIV • multitouch până la 10 degete"
+        clientStatus.text = "VIDEO ACTIV • multitouch și controller Bluetooth"
     }
 
     override fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState) = runOnUiThread {
@@ -243,7 +281,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
 
     override fun onControlChannelStateChanged(state: DataChannel.State) = runOnUiThread {
         controlStatus.text = when (state) {
-            DataChannel.State.OPEN -> "CANAL CONTROL ACTIV • multitouch Client → Host"
+            DataChannel.State.OPEN -> "CANAL CONTROL ACTIV • touch și controller Client → Host"
             DataChannel.State.CONNECTING -> "Canalul de control se conectează…"
             DataChannel.State.CLOSING -> "Canalul de control se închide…"
             DataChannel.State.CLOSED -> "Canalul de control este închis"
@@ -253,6 +291,12 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
     override fun onRemoteControlExecuted(success: Boolean) = runOnUiThread {
         if (!success && pendingRole == "host") {
             controlStatus.text = "Activează Cosyra Remote Control în Setări → Accesibilitate"
+        }
+    }
+
+    override fun onRemoteGamepadCommand(command: GamepadCommand) = runOnUiThread {
+        if (pendingRole == "host") {
+            controlStatus.text = "Controller primit: ${command.kind} ${command.code} • injectarea în joc necesită integrare Host"
         }
     }
 
@@ -399,7 +443,7 @@ class MainActivity : AppCompatActivity(), SignalingClient.Listener, WebRtcSessio
             }
             addView(remoteRenderer, fullWidth(420))
 
-            addView(status("Versiune 0.7.0 • video și control multitouch WebRTC").apply {
+            addView(status("Versiune 0.7.0 • multitouch și controller WebRTC").apply {
                 setTextColor(Color.rgb(92, 112, 135))
             }, fullWidth())
         }, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
