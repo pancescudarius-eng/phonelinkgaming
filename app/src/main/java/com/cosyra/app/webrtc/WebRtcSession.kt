@@ -28,6 +28,7 @@ class WebRtcSession(
 
     private val factory: PeerConnectionFactory
     private val peerConnection: PeerConnection
+    private val controlChannel: DataChannel
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
 
@@ -53,6 +54,8 @@ class WebRtcSession(
         peerConnection = requireNotNull(
             factory.createPeerConnection(configuration, observer())
         ) { "WebRTC PeerConnection could not be created" }
+
+        controlChannel = peerConnection.createDataChannel("cosyra-control", DataChannel.Init())
     }
 
     fun addLocalAudioTrack() {
@@ -69,10 +72,7 @@ class WebRtcSession(
 
     fun createOffer() {
         peerConnection.createOffer(object : SimpleSdpObserver() {
-            override fun onCreateSuccess(description: SessionDescription) {
-                setLocalDescription(description)
-            }
-
+            override fun onCreateSuccess(description: SessionDescription) = setLocalDescription(description)
             override fun onCreateFailure(error: String) {
                 listener.onError("Nu s-a putut crea oferta WebRTC: $error")
             }
@@ -81,10 +81,7 @@ class WebRtcSession(
 
     fun createAnswer() {
         peerConnection.createAnswer(object : SimpleSdpObserver() {
-            override fun onCreateSuccess(description: SessionDescription) {
-                setLocalDescription(description)
-            }
-
+            override fun onCreateSuccess(description: SessionDescription) = setLocalDescription(description)
             override fun onCreateFailure(error: String) {
                 listener.onError("Nu s-a putut crea răspunsul WebRTC: $error")
             }
@@ -102,10 +99,7 @@ class WebRtcSession(
         }
 
         peerConnection.setRemoteDescription(object : SimpleSdpObserver() {
-            override fun onSetSuccess() {
-                onApplied?.invoke()
-            }
-
+            override fun onSetSuccess() { onApplied?.invoke() }
             override fun onSetFailure(error: String) {
                 listener.onError("SDP-ul de la celălalt telefon nu a putut fi aplicat: $error")
             }
@@ -113,12 +107,12 @@ class WebRtcSession(
     }
 
     fun addRemoteIceCandidate(payload: IceCandidatePayload) {
-        peerConnection.addIceCandidate(
-            IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.candidate)
-        )
+        peerConnection.addIceCandidate(IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.candidate))
     }
 
     fun close() {
+        controlChannel.close()
+        controlChannel.dispose()
         audioTrack?.dispose()
         audioTrack = null
         audioSource?.dispose()
@@ -147,13 +141,11 @@ class WebRtcSession(
         override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) = Unit
-
         override fun onIceCandidate(candidate: IceCandidate) {
             listener.onLocalIceCandidate(
                 IceCandidatePayload(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
             )
         }
-
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
         override fun onRemoveStream(stream: MediaStream) = Unit
@@ -162,7 +154,6 @@ class WebRtcSession(
         override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) {
             (receiver.track() as? VideoTrack)?.let(listener::onRemoteVideoTrack)
         }
-
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
             listener.onConnectionStateChanged(newState)
         }
