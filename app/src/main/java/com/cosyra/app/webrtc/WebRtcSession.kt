@@ -3,6 +3,7 @@ package com.cosyra.app.webrtc
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
+import com.cosyra.app.control.MultiTouchCommand
 import com.cosyra.app.control.RemoteControlAccessibilityService
 import com.cosyra.app.control.TouchCommand
 import org.webrtc.AudioSource
@@ -155,10 +156,14 @@ class WebRtcSession(
         surfaceTextureHelper = null
     }
 
-    fun sendTouch(command: TouchCommand): Boolean {
+    fun sendTouch(command: TouchCommand): Boolean = sendControlPayload(command.toJson())
+
+    fun sendMultiTouch(command: MultiTouchCommand): Boolean = sendControlPayload(command.toJson())
+
+    private fun sendControlPayload(payload: String): Boolean {
         val channel = controlChannel ?: return false
         if (channel.state() != DataChannel.State.OPEN) return false
-        val bytes = command.toJson().toByteArray(StandardCharsets.UTF_8)
+        val bytes = payload.toByteArray(StandardCharsets.UTF_8)
         return channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
     }
 
@@ -251,8 +256,12 @@ class WebRtcSession(
                 if (buffer.binary) return
                 val data = ByteArray(buffer.data.remaining())
                 buffer.data.get(data)
-                val command = TouchCommand.fromJson(String(data, StandardCharsets.UTF_8)) ?: return
-                val success = RemoteControlAccessibilityService.dispatch(command)
+                val raw = String(data, StandardCharsets.UTF_8)
+                val success = MultiTouchCommand.fromJson(raw)?.let {
+                    RemoteControlAccessibilityService.dispatch(it)
+                } ?: TouchCommand.fromJson(raw)?.let {
+                    RemoteControlAccessibilityService.dispatch(it)
+                } ?: return
                 listener.onRemoteControlExecuted(success)
             }
         })
